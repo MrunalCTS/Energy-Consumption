@@ -1,0 +1,502 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Sep 21 16:45:35 2023
+
+@author: 160589
+"""
+
+import pandas as pd
+import numpy as np
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import seaborn as sns
+import sklearn 
+# ignore warnings
+import warnings
+warnings.filterwarnings("ignore")
+
+# importing relevant .csv files for our study
+metadata = pd.read_csv("C:\\Users\\160589\\Shubha\\2023\\QAS\\KeyBank Hackathon\\EnergyConsumption\\metadata.csv", index_col=0)
+electricity = pd.read_csv('C:\\Users\\160589\\Shubha\\2023\\QAS\\KeyBank Hackathon\\EnergyConsumption\\electricity_cleaned.csv', index_col=0, parse_dates=True)
+weather = pd.read_csv('C:\\Users\\160589\\Shubha\\2023\\QAS\\KeyBank Hackathon\\EnergyConsumption\\weather.csv', index_col=0, parse_dates=True)
+
+
+# exploratory information on the buildings
+metadata.info()
+
+# exploratory information on electricity
+electricity.info()
+
+# descriptive stats on the weather dataset
+weather.describe()
+
+# clean up the metadata dataset to select the electricity data
+bdg_elec = metadata.dropna(axis=0, how="any", subset=['electricity'])
+# get the number of missing data points per column for buildings
+missing_value_count_bdg = bdg_elec.isnull().sum()
+missing_value_count_bdg
+# replace NULL values
+bdg_elec["site_id"].fillna(method="bfill", inplace=True)
+site_id = bdg_elec["site_id"].unique()
+# selecting "sqm" column and fill NaN values into new dataframe
+bdg_sqm = pd.DataFrame(bdg_elec.loc[:,'sqm'])
+# get the number of missing data points per column for weather
+missing_value_count_weather = weather.isnull().sum()
+missing_value_count_weather
+# changing the negative values for precipDepth1HR to zero
+for i in range(len(weather.index)):
+    if weather["precipDepth1HR"][i] < 0:
+        weather["precipDepth1HR"][i] = 0
+        # daily weather dataframe
+weather_daily = pd.DataFrame()
+for id in site_id:
+    weather_id = pd.DataFrame(
+        weather.loc[weather["site_id"] == id, :]
+    )
+    weather_id_daily = pd.DataFrame(
+        weather_id.resample("D").mean()
+    )
+    weather_id_daily = weather_id_daily.join(weather_id["site_id"], how="left")
+    weather_daily = weather_daily.append(weather_id_daily)
+    # replace missing or NULL values
+weather_daily['site_id'].fillna(method="bfill", inplace=True)
+weather_daily['airTemperature'].fillna(method="bfill", inplace=True)
+weather_daily['dewTemperature'].fillna(method="bfill", inplace=True)
+weather_daily['seaLvlPressure'].fillna(method="bfill", inplace=True)
+weather_daily['windDirection'].fillna(method="bfill", inplace=True)
+weather_daily['windSpeed'].fillna(method="bfill", inplace=True)
+weather_daily['cloudCoverage'].fillna(0, inplace=True)
+weather_daily['precipDepth1HR'].fillna(0, inplace=True)
+
+# checking for NULL values
+weather_daily.isnull().sum()
+# extract daily electricity data
+elec_daily = electricity.resample("D").mean()
+
+# get the number of missing data points per column for electricity
+missing_value_count_elec = electricity.isnull().sum()
+missing_value_count_elec
+
+# replace missing or NULL values
+elec_daily.fillna(method="bfill", inplace=True)
+elec_daily.fillna(method="ffill", inplace=True)
+elec_daily.dropna(axis=1, inplace=True)
+# get bdg name array
+bdg_names = elec_daily.columns.to_numpy()
+
+# calculate building electricity per sqm
+elec_daily_sqm = pd.DataFrame(
+    index=elec_daily.index,
+    columns=elec_daily.columns
+)
+# calculate watt per sqm
+for bdg_name in bdg_names:
+    elec_daily_sqm[bdg_name] = elec_daily[bdg_name] * 1000 / bdg_sqm.loc[bdg_name]["sqm"]
+    
+# calculate the daily elec mean per sqm
+elec_daily_sqm_mean = pd.Series(elec_daily_sqm.mean())
+
+# descriptive stats on the daily electricity per sqm
+elec_daily_sqm_mean.describe
+# removing outliers using IQR
+elec_daily_sqm_Q1 = elec_daily_sqm_mean.quantile(0.25)
+elec_daily_sqm_Q3 = elec_daily_sqm_mean.quantile(0.75)
+elec_daily_sqm_IQR = elec_daily_sqm_Q3 - elec_daily_sqm_Q1
+elec_daily_sqm_removed = elec_daily_sqm.copy()
+
+for id in elec_daily_sqm.columns.to_numpy():
+    if elec_daily_sqm[id].mean() < elec_daily_sqm_Q1 or elec_daily_sqm[id].mean() > (elec_daily_sqm_Q3 + 1.5 * elec_daily_sqm_IQR):
+        elec_daily_sqm_removed.drop(columns=id, inplace=True)
+# resample yearly electricity data
+elec_yearly_sqm = elec_daily_sqm_removed.resample("Y").mean().mean()
+elec_yearly_sqm.rename('yearly_elec_sqm', inplace=True)
+
+# create new dataframe to include 'building_id', 'yearly_ave', 'sqm', and 'yearbuilt'
+bdg_yearly_elec = bdg_elec.loc[elec_yearly_sqm.index][['yearbuilt', 'sqm', 'primaryspaceusage', 'sub_primaryspaceusage', 'site_id']]
+bdg_yearly_elec = bdg_yearly_elec.join(elec_yearly_sqm, how='left')
+bdg_yearly_elec
+
+# import required libraries for feature importance
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error
+from sklearn.metrics import r2_score
+
+# creating weather dataframe for Panther
+weather_daily_Panther = pd.DataFrame(weather_daily.loc[weather_daily['site_id'] == 'Panther'])
+
+# drop site_id column
+weather_daily_Panther.drop(columns='site_id', inplace=True)
+
+# check Panther weather dataset
+weather_daily_Panther
+
+# creating electricity dataframe for Panther
+elec_daily_sqm_Panther = elec_daily_sqm_removed.filter(like='Panther', axis=1)
+
+# check Panther electricity dataset
+elec_daily_sqm_Panther
+
+# split Panther data to train and test sets
+X_train, X_valid, y_train, y_valid = train_test_split(weather_daily_Panther, elec_daily_sqm_Panther, random_state=42)
+
+# optimising model accuracy using exhaustive grid search
+'''from sklearn.model_selection import GridSearchCV
+
+params_to_test = {
+    "n_estimators": range(250,280,10)
+    'max_depth': [4,5,6],
+    'min_samples_split': range(11,19,1),
+    'min_samples_leaf': range (1,5,1),
+    'max_leaf_nodes': [14,15,16]
+}
+
+rf_model = RandomForestRegressor(random_state=0)
+grid_search = GridSearchCV(
+    rf_model,
+    param_grid=params_to_test,
+    scoring='neg_mean_squared_error',
+    n_jobs=8,
+    cv=10
+)
+grid_search.fit(X_train, y_train)
+best_params = grid_search.best_params_
+print(best_params)'''
+
+#  Herein, the GridSearchCV function was utilized to optimize the parameters of our random forest regressor model. 
+#  We refered to previous research from India to narrow down the testing range. (doi.org/10.1007/s00202-020-01126-z) 
+#  The training process needs tremendous memory and has been debugged and run offline.
+#  We fit the model with the best parameters we obtained from the previous training.
+
+elec_model = RandomForestRegressor(
+    n_estimators=270, max_leaf_nodes=15, max_depth=5, min_samples_split=12, min_samples_leaf=2, n_jobs=8, random_state=42, warm_start=True
+)
+
+elec_model.fit(X_train, y_train)
+
+# investigating the feature importance
+feature_importance = elec_model.feature_importances_
+indices = np.argsort(feature_importance)[::-1]
+
+# plot feature importance oƒ weather dataset
+weather_feature_importance = pd.Series(
+    data=feature_importance[indices], index=weather_daily_Panther.columns[indices], name='Weather Feature Importance'
+)
+
+# print the feature ranking
+print("Feature Ranking:")
+print(weather_feature_importance)
+
+# set sns theme
+sns.set_theme(style='ticks', font_scale=1.5, palette='husl')
+
+# plot the feature ranking
+plt.figure(figsize=(20, 10), dpi=200)
+sns.barplot(x=weather_feature_importance, y=weather_feature_importance.index)
+
+# calculating the r2 values
+r2_values = pd.Series(index=site_id, dtype=float, name='r2_value')
+for id in site_id:
+    #airTemperature
+    airT_id = pd.DataFrame(
+        weather_daily.loc[weather_daily['site_id'] == id][['airTemperature']]
+    )
+    #elecDailysqm
+    elec_daily_sqm_id = elec_daily_sqm_removed.filter(like=id, axis=1)
+    weather_id_train, weather_id_valid, elec_id_train, elec_id_valid = train_test_split(
+        airT_id, elec_daily_sqm_id, random_state=42
+    )
+    #RFRegressorModel
+    airT_elec_model = RandomForestRegressor(
+        n_estimators=270, max_leaf_nodes=15, max_depth=5, min_samples_split=12, min_samples_leaf=2, n_jobs=8, random_state=10, warm_start=True
+    )
+    #fitting
+    airT_elec_model.fit(weather_id_train, elec_id_train)
+    elec_id_predict = airT_elec_model.predict(weather_id_valid)
+    r2_values.loc[id] = r2_score(elec_id_valid, elec_id_predict)
+
+# print r2_values
+print(r2_values)
+
+# plot data and regression model by randomly select nine (9) buildings from Panther
+lmplot_data = pd.DataFrame(weather_daily_Panther['airTemperature'])
+
+lmplot_data = lmplot_data.join(
+    elec_daily_sqm_Panther.sample(n=9, random_state=42, axis=1), how='left'
+)
+
+lmplot_data.drop_duplicates(
+    subset='Panther_lodging_Marisol', keep='first', inplace=True, ignore_index=False
+)
+
+lmplot_data_melt = lmplot_data.melt(
+    id_vars='airTemperature', value_name='Electricity_Consumption', var_name='Building_ID'
+)
+
+# set sns theme
+sns.set_theme(font_scale=1, palette=['#0060B6'], style="ticks")
+
+# plot the diagram
+ax = sns.lmplot(
+    data=lmplot_data_melt, x='airTemperature', y='Electricity_Consumption', col='Building_ID', col_wrap=3, aspect=2, ci=5, truncate=True, line_kws={'color': '#E95581', 'linewidth': 3}
+)
+# yearly electricity consumption based on year built
+bdg_yearly_elec['yearbuilt_times'] = bdg_yearly_elec['yearbuilt'].apply(lambda x: ((x - 1900) // 10)*10 + 1900)
+bdg_yearly_elec.head()
+
+# plot the histogram
+plt.figure(figsize=(25, 10), dpi=300)
+N, bins, patches = plt.hist(bdg_yearly_elec['yearbuilt_times'])
+cmap = plt.get_cmap('viridis', len(patches))
+for i in range(len(patches)):
+    patches[i].set_facecolor(cmap(i))
+plt.xlabel('Year Built')
+plt.ylabel('Number of Buildings')
+
+# set sns theme
+sns.set_theme(font_scale=1, palette=['#000066'], style="ticks")
+
+# plot the scatterplot
+year_built = sns.lmplot(data=bdg_yearly_elec, x='yearbuilt', y='yearly_elec_sqm', truncate=True, line_kws={'color': '#809fff', 'linewidth': 3}, aspect=3)
+
+# based on median
+times_median_elec = bdg_yearly_elec.groupby(['yearbuilt_times']).median()
+times_median_elec['yearbuilt_times'] = times_median_elec.index
+# set sns theme
+sns.set_theme(style='ticks', font_scale=1.5, palette=['#000066'])
+
+# plot the scatterplot
+lmplot3 = sns.lmplot(x='yearbuilt_times', y="yearly_elec_sqm", truncate=True, data=times_median_elec, line_kws={'color': '#809fff'}, order=2, aspect=3)
+
+# primary usage of buildings from 1950 onwards
+bdg_yearly_elec_1950_2020 = pd.DataFrame(
+    bdg_yearly_elec.loc[bdg_yearly_elec['yearbuilt'] >= 1950]
+)
+
+bdg_yearly_elec_1950_2020['primaryspaceusage'].value_counts()
+
+# drop bdg type with insufficient data
+usage_to_use = bdg_yearly_elec_1950_2020['primaryspaceusage'].value_counts().index.tolist()[:6]
+bdg_yearly_elec_usage = pd.DataFrame(
+    bdg_yearly_elec_1950_2020.loc[bdg_yearly_elec_1950_2020['primaryspaceusage'].isin(usage_to_use)]
+)
+
+print(bdg_yearly_elec_usage)
+
+# set sns theme
+sns.set_theme(
+    font_scale=1, palette=['#453F9B'], style="ticks",
+    rc={'figure.figsize': (100, 4), 'figure.subplot.wspace': 0.9,
+        'figure.subplot.hspace': 0.9}
+)
+
+# plot the scatterplot
+sns.lmplot(data=bdg_yearly_elec_usage, x='yearbuilt_times', y='yearly_elec_sqm', col='primaryspaceusage', col_wrap=2, truncate=True, line_kws={'color': '#E95581', 'linewidth': 3}, order=1, aspect=2)
+
+# air temperature distributions based on the different sites
+airT_site_mean = weather_daily[['airTemperature', 'site_id']].groupby('site_id').mean()
+airT_site_max = weather_daily[['airTemperature', 'site_id']].groupby('site_id').max()
+
+airT_site = pd.concat([airT_site_mean, airT_site_max], axis=1)
+airT_site.columns = ['airT_mean', 'airT_max']
+airT_site['site_id'] = airT_site.index
+airT_site.sort_values(by='airT_mean', axis=0, inplace=True, ascending=False, ignore_index=True)
+# set sns theme
+sns.set_theme(font_scale=1, palette=['#E95581', '#FFBE59'], style="ticks")
+
+# plot the diagram
+plt.figure(figsize=(25, 10), dpi=300)
+barplot_data = airT_site.melt(id_vars='site_id', var_name='Air Temperature')
+sns.barplot(data=barplot_data, x='site_id', y='value', hue='Air Temperature')
+
+# create dataframe from 1990 to 2020
+bdg_yearly_elec_1990_2020 = pd.DataFrame(bdg_yearly_elec.loc[bdg_yearly_elec['yearbuilt'] >= 1990])
+bdg_yearly_elec_1990_2020
+
+# filter bdgs on hot climates
+bdg_elec_site = pd.DataFrame()
+for ID in airT_site['site_id'].values[: 4]:
+    bdg_elec_site = pd.concat(
+        [bdg_elec_site, bdg_yearly_elec_1990_2020.loc[bdg_yearly_elec_1990_2020['site_id'] == ID]], axis=0
+    )
+bdg_elec_site
+
+# count buildings in hot climates
+hot_climates = pd.DataFrame()
+for ID in usage_to_use:
+    hot_climates = pd.concat(
+        [hot_climates, bdg_elec_site.loc[bdg_elec_site['primaryspaceusage'] == ID]], axis=0
+    )
+hot_climates['site_id'].value_counts()
+
+# plot the histogram for hot climates based on primary usage
+hot_climates_type = hot_climates.groupby(['primaryspaceusage']).mean()
+hot_climates_type.drop(columns=['yearbuilt', 'sqm'], inplace=True)
+hot_climates_type['primaryspaceusage'] = hot_climates_type.index
+hot_climates_type.sort_values(by='yearly_elec_sqm', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last', ignore_index=False, key=None)
+
+# set sns theme
+sns.set_theme(style='ticks', font_scale=1.5, palette='husl', rc={'figure.figsize': (25, 15)})
+
+# plot bar chart
+sns.barplot(data=hot_climates_type, x='primaryspaceusage', y='yearly_elec_sqm')
+
+# number of buildings in each sub primary space usage
+education = pd.DataFrame(
+    hot_climates.loc[hot_climates['primaryspaceusage'] == 'Education'])
+education.sort_values(
+    by='yearly_elec_sqm', axis=0, ascending=False, inplace=True, kind='quicksort', na_position='last', ignore_index=False, key=None
+)
+education['sub_primaryspaceusage'].value_counts()
+
+# analysing the built year influence in classroom
+classroom = ['Classroom', 'College Classroom']
+edu_classroom = pd.DataFrame(
+    education.loc[education['sub_primaryspaceusage'].isin(classroom)]
+)
+edu_classroom.sort_values(
+    by=['yearly_elec_sqm'], axis=0, inplace=True, ascending=False)
+
+# set sns theme
+sns.set_theme(style='ticks', font_scale=1.5, palette=['#000066'])
+
+# plot the diagram
+sns.lmplot(
+    data=edu_classroom, x='yearbuilt', y='yearly_elec_sqm', line_kws={'color': '#809fff'}, aspect=2
+)
+
+edu_classroom_names = edu_classroom.index.values
+
+# creating subplots
+plt.figure(figsize=(150, 100), dpi=200)
+sns.set_theme(style='ticks', palette='husl', font_scale=4)
+plt.xticks(fontsize=10)
+
+# plotting columns
+ax = sns.barplot(
+    data=pd.DataFrame(data={
+        'BuildingName': bdg_yearly_elec_usage.loc[edu_classroom_names, 'yearly_elec_sqm'].index.values,
+        'Total': bdg_yearly_elec_usage.loc[edu_classroom_names, 'yearly_elec_sqm'].values}
+    ),
+    x='BuildingName', y='Total'
+)
+plt.ylabel('Total energy consumption per sqm (Watt/m2)')
+ax.legend(ncol=2, frameon=True, loc='upper right', fontsize=50)
+
+edu_classroom_elec = elec_daily_sqm_removed[edu_classroom_names]
+
+# select eletricity data from daily data into weekdays and weekends dataset
+edu_classroom_elec_weekdays = edu_classroom_elec[edu_classroom_elec.index.weekday.isin(range(0, 5, 1)) ]
+edu_classroom_elec_weekends = edu_classroom_elec[edu_classroom_elec.index.weekday.isin([5,6]) ]
+
+# extract electricity consumption of Emily, Aurora and Leona
+emily_edu_classroom_elec = edu_classroom_elec.loc [:,edu_classroom_elec.columns.str.contains('Emily')]
+aurora_edu_classroom_elec = edu_classroom_elec.loc [:,edu_classroom_elec.columns.str.contains('Aurora')]
+leo_edu_classroom_elec = edu_classroom_elec.loc [:,edu_classroom_elec.columns.str.contains('Leona')]
+
+# merge the data from the three sites together
+shortlist_edu_elec = pd.concat([emily_edu_classroom_elec,aurora_edu_classroom_elec,leo_edu_classroom_elec], axis=1)
+# set sns theme
+sns.set_theme(style='ticks', font_scale=2, palette='husl')
+
+# plot diagram to compare the three sites
+plt.figure(figsize=(100,40), dpi=300)
+plt.plot(shortlist_edu_elec.index, shortlist_edu_elec.Panther_education_Emily, label = "Emily",linewidth=5)
+plt.plot(shortlist_edu_elec.index, shortlist_edu_elec.Panther_education_Aurora, label = "Aurora",linewidth=5)
+plt.plot(shortlist_edu_elec.index, shortlist_edu_elec.Fox_education_Leona, label = "Leona",linewidth=5)
+plt.xlabel("Time", fontsize=50)
+plt.ylabel("Daily Electricity Consumption (Watt/m2)", fontsize=50)
+
+plt.legend(fontsize=50)
+plt.show()
+
+# truncate fall school term on weekly data
+fall_emily = shortlist_edu_elec.Panther_education_Emily.truncate(before="2017-08-28", after="2017-12-08")
+fall_aurora = shortlist_edu_elec.Panther_education_Aurora.truncate(before="2017-08-28", after="2017-12-08")
+fall_leona = shortlist_edu_elec.Fox_education_Leona.truncate(before="2017-08-28", after="2017-12-08")
+#before="2017-09-08", after="2017-11-01"
+
+# merge the dataframes for all three sites
+fall_edu_elec = pd.concat([fall_emily,fall_aurora,fall_leona], axis=1)
+# select electricity data from daily data into weekdays and weekends dataset
+fall_edu_elec_weekdays = fall_edu_elec[fall_edu_elec.index.weekday.isin(range(0, 5, 1)) ]
+fall_edu_elec_weekends = fall_edu_elec[fall_edu_elec.index.weekday.isin([5,6]) ]
+# get the mean electricity consumption for weekdays in the fall term
+fall_edu_elec_weekdays_mean = fall_edu_elec_weekdays.mean()
+fall_edu_elec_weekdays_mean
+
+# get the mean electricity consumption for weekends in the fall term
+fall_edu_elec_weekends_mean = fall_edu_elec_weekends.mean()
+fall_edu_elec_weekends_mean
+
+# plot the bar diagram for weekdays and weekends
+barplot_data = pd.DataFrame(
+    data={
+        'BuildingName': fall_edu_elec_weekdays_mean.index.values,
+        'Weekdays': fall_edu_elec_weekdays_mean.values,
+        'Weekends': fall_edu_elec_weekends_mean.values
+    }
+)
+barplot_data = barplot_data.melt(
+    id_vars='BuildingName', var_name='Days', value_name="Daily electricity consumption (Watt/m2)"
+)
+
+plt.figure(figsize=(30,10), dpi=300)
+sns.set_theme(style='ticks', font_scale=2, palette='husl')
+plt.xticks(fontsize=25)
+barplot = sns.barplot(data=barplot_data, x='BuildingName', y='Daily electricity consumption (Watt/m2)', hue='Days')
+sns.move_legend(obj=barplot, loc='upper right', fontsize=20)
+
+# plot the electricity consumption trend on a weekly basis
+
+plt.figure(figsize=(100,40), dpi=100)
+sns.set_theme(style='ticks', font_scale=7, palette="husl")
+
+plt.plot(fall_emily.index, fall_emily, label = "Emily", linewidth=8)
+plt.plot(fall_aurora.index, fall_aurora, label = "Aurora", linewidth=8)
+plt.plot(fall_leona.index, fall_leona, label = "Leona", linewidth=8)
+plt.xlabel("Time", fontsize=90)
+plt.ylabel("Daily electricity consumption (Watt/m2)", fontsize=90)
+
+plt.legend(fontsize=80)
+plt.show()
+
+# truncate winter holiday on weekly data
+winterhol_emily = shortlist_edu_elec.Panther_education_Emily.truncate(before="2016-12-22", after="2017-01-12")
+winterhol_aurora = shortlist_edu_elec.Panther_education_Aurora.truncate(before="2016-12-22", after="2017-01-12")
+winterhol_leona = shortlist_edu_elec.Fox_education_Leona.truncate(before="2016-12-22", after="2017-01-12")
+
+# merge the dataframes for all three sites
+winterhol_edu_elec = pd.concat([winterhol_emily,winterhol_aurora,winterhol_leona], axis=1)
+# truncate winter holiday on weekly data
+winterhol_emily = shortlist_edu_elec.Panther_education_Emily.truncate(before="2016-12-22", after="2017-01-12")
+winterhol_aurora = shortlist_edu_elec.Panther_education_Aurora.truncate(before="2016-12-22", after="2017-01-12")
+winterhol_leona = shortlist_edu_elec.Fox_education_Leona.truncate(before="2016-12-22", after="2017-01-12")
+
+# merge the dataframes for all three sites
+winterhol_edu_elec = pd.concat([winterhol_emily,winterhol_aurora,winterhol_leona], axis=1)
+
+# get the mean electricity consumption for the 3 classrooms during the fall school term
+fall_edu_elec_mean = fall_edu_elec.mean()
+
+# get the mean electricity consumption for the 3 classrooms during the winter holiday
+winterhol_edu_elec_mean = winterhol_edu_elec.mean()
+
+# plot the bar diagram to compare the school term vs holiday
+barplot_data = pd.DataFrame(
+    data={
+        'BuildingName': fall_edu_elec_mean.index.values,
+        'Fall School Term': fall_edu_elec_mean.values,
+        'Winter Holiday': winterhol_edu_elec_mean.values
+    }
+)
+barplot_data = barplot_data.melt(
+    id_vars='BuildingName', var_name='Time Period', value_name="Daily electricity consumption (Watt/m2)"
+)
+
+plt.figure(figsize=(30,15), dpi=100)
+sns.set_theme(style='ticks', font_scale=2, palette='husl')
+plt.xticks(fontsize=25)
+plt.yticks(fontsize=25)
+barplot = sns.barplot(data=barplot_data, x='BuildingName', y='Daily electricity consumption (Watt/m2)', hue='Time Period')
+sns.move_legend(obj=barplot, loc='upper right', fontsize=20)
