@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: GPL-3.0
+
+pragma solidity >=0.8.2 <0.9.0;
+
+/**
+ * @title Storage
+ * @dev Store & retrieve value in a variable
+ * @custom:dev-run-script ./scripts/deploy_with_ethers.ts
+ */
+contract CarbonCreditTrade {
+
+    address payable public buyer;
+    address payable public seller;
+    uint public carbonCreditsAvailable;
+    uint public rewardPointsAwarded;
+    uint public creditPrice;
+
+    constructor(uint256 _creditPrice) payable{
+        seller = payable(msg.sender);
+        carbonCreditsAvailable = 10000; //set the initial number of carbon credits available
+        creditPrice = _creditPrice;
+    }
+
+    function buyCarbonCredits(uint _creditsToBuy) external payable{
+        require(msg.sender != seller, "seller cannot buy CC");
+        require(msg.sender != buyer, "buyer cannot be same as seller");
+        require(_creditsToBuy <= carbonCreditsAvailable, "insufficient carbon credits available");
+
+        uint256 totalCost = _creditsToBuy * creditPrice; //set the cost of each carboncredit
+
+        require(msg.value <= totalCost,"Insufficient token for desired number of credits");
+
+        buyer = payable(msg.sender);
+        carbonCreditsAvailable -= _creditsToBuy;
+        rewardPointsAwarded += _creditsToBuy / 10;
+      
+        if(msg.value > totalCost)      {
+            uint refundAmount = msg.value - totalCost;
+            payable(buyer).transfer(refundAmount);
+        }
+
+    }
+
+    function getRewardPointsAwarded() external view returns (uint){
+        return rewardPointsAwarded;
+    }
+
+}
